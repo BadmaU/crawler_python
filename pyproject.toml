@@ -1,0 +1,26 @@
+[project]
+name = "crawler-python"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "BadmaU", email = "u.badma@mail.ru" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "aiofiles>=25.1.0",
+    "aiohttp>=3.14.3",
+    "aiosqlite>=0.22.1",
+    "beautifulsoup4>=4.15.0",
+    "lxml>=6.1.2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.25.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.6,<0.13.0"]
+build-backend = "uv_build"
