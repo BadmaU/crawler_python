@@ -10,7 +10,16 @@ logging.basicConfig(
 
 
 async def main() -> None:
-    crawler = AsyncCrawler(max_concurrent=5, per_domain=2, timeout=10)
+    crawler = AsyncCrawler(
+        max_concurrent=3,
+        per_domain=2,
+        timeout=10,
+        requests_per_second=2.0,
+        min_delay=0.3,
+        jitter=0.2,
+        respect_robots=True,
+        user_agent="MyBot/1.0",
+    )
     results = await crawler.crawl(
         start_urls=["https://example.com"],
         max_pages=10,
