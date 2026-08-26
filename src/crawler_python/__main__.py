@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import time
 
 from crawler_python import AsyncCrawler
 
@@ -11,35 +10,19 @@ logging.basicConfig(
 
 
 async def main() -> None:
-    crawler = AsyncCrawler(max_concurrent=5, timeout=10)
-    urls = [
-        "https://example.com",
-        "https://httpbin.org/html",
-    ]
-
-    start = time.perf_counter()
-    tasks = [crawler.fetch_and_parse(url) for url in urls]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    elapsed = time.perf_counter() - start
-
+    crawler = AsyncCrawler(max_concurrent=5, per_domain=2, timeout=10)
+    results = await crawler.crawl(
+        start_urls=["https://example.com"],
+        max_pages=10,
+        max_depth=1,
+        same_domain_only=True,
+    )
     await crawler.close()
 
-    for result in results:
-        if isinstance(result, Exception):
-            print(f"Ошибка: {result}")
-            continue
-        print(f"\n--- {result['url']} ---")
-        print(f"  Title: {result['title']}")
-        print(f"  Text length: {len(result['text'])}")
-        print(f"  Links: {len(result['links'])}")
-        print(f"  Images: {len(result['images'])}")
-        print(f"  Headings: {sum(len(v) for v in result['headings'].values())}")
-        print(f"  Tables: {len(result['tables'])}")
-        print(f"  Lists: {len(result['lists'])}")
-
-    print(f"\nВремя: {elapsed:.2f}с")
+    print(f"\nОбработано: {len(results)} страниц")
+    for url, data in results.items():
+        print(f"  {url} — {data['title']} ({len(data['text'])} символов)")
 
 
 if __name__ == "__main__":
     asyncio.run(main())
-
