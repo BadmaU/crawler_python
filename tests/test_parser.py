@@ -1,4 +1,5 @@
 import pytest
+from bs4 import BeautifulSoup
 
 from crawler_python.parser import HTMLParser
 
@@ -59,8 +60,8 @@ def test_parse_links(parser: HTMLParser):
 
 
 def test_relative_to_absolute(parser: HTMLParser):
-    soup_result = parser.parse_html(SAMPLE_HTML, "https://example.com/dir/page")
-    assert "https://example.com/page1" in soup_result["links"]
+    result = parser.parse_html(SAMPLE_HTML, "https://example.com/dir/page")
+    assert "https://example.com/page1" in result["links"]
 
 
 def test_filter_invalid_links(parser: HTMLParser):
@@ -120,9 +121,6 @@ def test_empty_html(parser: HTMLParser):
 
 
 def test_extract_text_with_selector(parser: HTMLParser):
-    text = parser.extract_text(
-        parser.parse_html(SAMPLE_HTML, "")["url"] and
-        __import__("bs4").BeautifulSoup(SAMPLE_HTML, "lxml"),
-        "p",
-    )
+    soup = BeautifulSoup(SAMPLE_HTML, "lxml")
+    text = parser.extract_text(soup, "p")
     assert text == "Hello world"

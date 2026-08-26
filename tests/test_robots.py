@@ -8,11 +8,10 @@ User-agent: *
 Disallow: /private/
 Disallow: /admin
 Allow: /public/
+Crawl-delay: 5
 
 User-agent: BadBot
 Disallow: /
-
-Crawl-delay: 5
 
 Sitemap: https://example.com/sitemap.xml
 """

@@ -1,5 +1,3 @@
-import asyncio
-
 import pytest
 
 from crawler_python import AsyncCrawler
@@ -8,7 +6,13 @@ from crawler_python.queue import CrawlerQueue
 
 @pytest.mark.asyncio
 async def test_crawl_example_com():
-    crawler = AsyncCrawler(max_concurrent=3, per_domain=2, timeout=5)
+    crawler = AsyncCrawler(
+        max_concurrent=3,
+        per_domain=2,
+        timeout=5,
+        respect_robots=True,
+        circuit_breaker=False,
+    )
     results = await crawler.crawl(
         start_urls=["https://example.com"],
         max_pages=5,

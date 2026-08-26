@@ -1,5 +1,3 @@
-import time
-
 import pytest
 
 from crawler_python.crawler import AsyncCrawler
@@ -7,7 +5,13 @@ from crawler_python.crawler import AsyncCrawler
 
 @pytest.fixture
 def crawler():
-    return AsyncCrawler(max_concurrent=3, per_domain=2, timeout=5)
+    return AsyncCrawler(
+        max_concurrent=3,
+        per_domain=2,
+        timeout=5,
+        respect_robots=False,
+        circuit_breaker=False,
+    )
 
 
 def test_should_include_same_domain(crawler: AsyncCrawler):

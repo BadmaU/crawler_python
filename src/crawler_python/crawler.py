@@ -6,10 +6,17 @@ from urllib.parse import urlparse
 
 import aiohttp
 
+from crawler_python.circuit_breaker import CircuitBreaker
 from crawler_python.concurrency import SemaphoreManager
+from crawler_python.errors import (
+    CrawlerError,
+    ErrorType,
+    classify_exception,
+)
 from crawler_python.parser import HTMLParser
 from crawler_python.queue import CrawlerQueue
 from crawler_python.rate_limiter import RateLimiter
+from crawler_python.retry import RetryStrategy
 from crawler_python.robots import RobotsParser
 
 logger = logging.getLogger(__name__)
@@ -27,6 +34,9 @@ class AsyncCrawler:
         jitter: float = 0.0,
         respect_robots: bool = True,
         user_agent: str = "AsyncCrawler/1.0",
+        max_retries: int = 3,
+        backoff_factor: float = 2.0,
+        circuit_breaker: bool = True,
     ) -> None:
         self._timeout = aiohttp.ClientTimeout(total=timeout)
         self._session: aiohttp.ClientSession | None = None
@@ -46,10 +56,14 @@ class AsyncCrawler:
             jitter=jitter,
         )
         self._robots = RobotsParser(user_agent=user_agent)
+        self._retry_strategy = RetryStrategy(
+            max_retries=max_retries,
+            backoff_factor=backoff_factor,
+        )
+        self._circuit_breaker = CircuitBreaker() if circuit_breaker else None
 
         self._results: dict[str, dict] = {}
         self._start_time: float = 0
-        self._backoff: dict[str, float] = {}
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -78,57 +92,45 @@ class AsyncCrawler:
             self._rate_limiter.record_blocked()
         return allowed
 
-    async def _fetch(self, url: str) -> str:
+    async def _do_fetch(self, url: str) -> str:
         session = await self._get_session()
+        logger.info("Загрузка %s", url)
+        async with session.get(url) as response:
+            response.raise_for_status()
+            text = await response.text()
+            logger.info("Успешно: %s (%d)", url, response.status)
+            return text
+
+    async def _fetch(self, url: str) -> str:
         domain = urlparse(url).netloc
 
         await self._ensure_robots(url)
         if not self._is_allowed(url):
             raise PermissionError(f"Запрещено robots.txt: {url}")
 
+        if self._circuit_breaker and self._circuit_breaker.is_open(domain):
+            logger.warning("Circuit breaker открыт для %s, пропуск %s", domain, url)
+            raise CrawlerError(
+                f"Circuit breaker открыт: {domain}",
+                ErrorType.NETWORK,
+                url,
+            )
+
         await self._rate_limiter.acquire(domain)
         await self._sem_manager.acquire(url)
-
-        retries = 0
-        max_retries = 3
-        while True:
-            try:
-                logger.info("Загрузка %s", url)
-                async with session.get(url) as response:
-                    response.raise_for_status()
-                    text = await response.text()
-                    logger.info("Успешно: %s (%d)", url, response.status)
-                    self._backoff.pop(domain, None)
-                    return text
-            except aiohttp.ClientResponseError as e:
-                if e.status in (429, 503) and retries < max_retries:
-                    retries += 1
-                    backoff = min(2 ** retries, 30)
-                    logger.warning(
-                        "HTTP %d %s, повтор через %.1fс (попытка %d/%d)",
-                        e.status, url, backoff, retries, max_retries,
-                    )
-                    await asyncio.sleep(backoff)
-                    continue
-                logger.error("HTTP ошибка %s: %s", url, e)
-                raise
-            except asyncio.TimeoutError:
-                if retries < max_retries:
-                    retries += 1
-                    backoff = min(2 ** retries, 30)
-                    logger.warning(
-                        "Таймаут %s, повтор через %.1fс (попытка %d/%d)",
-                        url, backoff, retries, max_retries,
-                    )
-                    await asyncio.sleep(backoff)
-                    continue
-                logger.error("Таймаут %s", url)
-                raise
-            except aiohttp.ClientError as e:
-                logger.error("Сетевая ошибка %s: %s", url, e)
-                raise
-            finally:
-                await self._sem_manager.release(url)
+        try:
+            result = await self._retry_strategy.execute_with_retry(
+                self._do_fetch, url
+            )
+            if self._circuit_breaker:
+                self._circuit_breaker.record_success(domain)
+            return result
+        except Exception:
+            if self._circuit_breaker:
+                self._circuit_breaker.record_failure(domain)
+            raise
+        finally:
+            await self._sem_manager.release(url)
 
     async def _process_url(
         self,
@@ -180,17 +182,18 @@ class AsyncCrawler:
     def _log_progress(self) -> None:
         queue_stats = self._queue.get_stats()
         rate_stats = self._rate_limiter.get_stats()
+        retry_stats = self._retry_strategy.stats.get_summary()
         elapsed = time.perf_counter() - self._start_time
         speed = queue_stats["processed"] / elapsed if elapsed > 0 else 0
         logger.info(
             "Прогресс: %d обработано | %d в очереди | %d ошибок | "
-            "%.1f стр/с | задержек: %d (%.2fс)",
+            "%.1f стр/с | повторов: %d | постоянных: %d",
             queue_stats["processed"],
             queue_stats["in_queue"],
             queue_stats["failed"],
             speed,
-            rate_stats["total_waits"],
-            rate_stats["total_wait_time"],
+            retry_stats["successful_retries"],
+            retry_stats["permanent_failures"],
         )
 
     async def _worker(
@@ -249,16 +252,30 @@ class AsyncCrawler:
         elapsed = time.perf_counter() - self._start_time
         queue_stats = self._queue.get_stats()
         rate_stats = self._rate_limiter.get_stats()
+        retry_stats = self._retry_strategy.stats.get_summary()
         logger.info(
             "Краулинг завершён: %d страниц за %.2fс (%.1f стр/с) | "
-            "robots.txt блоков: %d",
+            "robots блоков: %d | повторов: %d | ошибок: %d",
             queue_stats["processed"],
             elapsed,
             queue_stats["processed"] / elapsed if elapsed > 0 else 0,
             rate_stats["blocked_by_robots"],
+            retry_stats["successful_retries"],
+            retry_stats["permanent_failures"],
         )
 
         return self._results
+
+    def get_error_stats(self) -> dict:
+        return {
+            "retry": self._retry_strategy.stats.get_summary(),
+            "circuit_breaker": (
+                self._circuit_breaker.get_stats()
+                if self._circuit_breaker
+                else None
+            ),
+            "queue": self._queue.get_stats(),
+        }
 
     async def close(self) -> None:
         await self._robots.close()
