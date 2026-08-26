@@ -3,6 +3,8 @@ import logging
 
 import aiohttp
 
+from crawler_python.parser import HTMLParser
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,6 +39,11 @@ class AsyncCrawler:
             except aiohttp.ClientError as e:
                 logger.error("Сетевая ошибка %s: %s", url, e)
                 raise
+
+    async def fetch_and_parse(self, url: str) -> dict:
+        html = await self.fetch_url(url)
+        parser = HTMLParser()
+        return parser.parse_html(html, url)
 
     async def fetch_urls(self, urls: list[str]) -> dict[str, str]:
         tasks = [self.fetch_url(url) for url in urls]
