@@ -1,0 +1,56 @@
+# Пример конфигурации для crawler_python
+# Запуск: python -m crawler_python --config config.yaml
+
+# Список стартовых URL
+start_urls:
+  - https://example.com
+
+# Ограничения краулинга
+max_pages: 100
+max_depth: 3
+same_domain_only: true
+
+# Фильтры URL (fnmatch-паттерны)
+include_patterns: []      # если пусто — включаются все
+exclude_patterns:
+  - "*/admin/*"
+  - "*/login"
+  - "*/logout"
+  - "*/cart*"
+  - "*?.pdf"
+  - "*?.jpg"
+  - "*?.png"
+  - "*?.css"
+  - "*?.js"
+
+# Масштабирование и производительность
+max_concurrent: 10
+per_domain: 3
+timeout: 10
+requests_per_second: 5.0
+min_delay: 0.0
+jitter: 0.0
+
+# Вежливость и надёжность
+respect_robots: true
+user_agent: "MyCrawler/2.0"
+max_retries: 3
+backoff_factor: 2.0
+circuit_breaker: true
+
+# Sitemap
+use_sitemap: false
+# sitemap_urls:
+#   - https://example.com/sitemap.xml
+
+# Сохранение данных
+storage: json          # json | csv | sqlite | none
+storage_path: results.json
+output_report: report.html
+output_stats: stats.json
+
+# Логирование
+logging_level: INFO
+log_file: crawler.log
+log_rotation: 5
+log_max_bytes: 5000000

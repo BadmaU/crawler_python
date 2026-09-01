@@ -1,28 +1,47 @@
 import asyncio
 import logging
 import time
+from datetime import datetime, timezone
 from fnmatch import fnmatch
 from urllib.parse import urlparse
 
 import aiohttp
 
 from crawler_python.circuit_breaker import CircuitBreaker
+from crawler_python.config import CrawlerConfig
 from crawler_python.concurrency import SemaphoreManager
 from crawler_python.errors import (
     CrawlerError,
     ErrorType,
     classify_exception,
 )
+from crawler_python.logging_setup import setup_logging
+from crawler_python.monitor import ProgressMonitor
 from crawler_python.parser import HTMLParser
 from crawler_python.queue import CrawlerQueue
 from crawler_python.rate_limiter import RateLimiter
 from crawler_python.retry import RetryStrategy
 from crawler_python.robots import RobotsParser
+from crawler_python.sitemap import SitemapParser
+from crawler_python.stats import CrawlerStats
+from crawler_python.storage import (
+    CSVStorage,
+    DataStorage,
+    JSONStorage,
+    SQLiteStorage,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class AsyncCrawler:
+    """Единый класс-приложение асинхронного веб-краулера.
+
+    Объединяет краулинг, парсинг, вежливость (robots/rate limit), повторы,
+    circuit breaker, сохранение данных, sitemap, расширенную статистику,
+    мониторинг в реальном времени и экспорт отчётов.
+    """
+
     def __init__(
         self,
         max_concurrent: int = 10,
@@ -37,12 +56,33 @@ class AsyncCrawler:
         max_retries: int = 3,
         backoff_factor: float = 2.0,
         circuit_breaker: bool = True,
+        storage: DataStorage | None = None,
+        config: CrawlerConfig | None = None,
     ) -> None:
+        if config is not None:
+            self._apply_config(config)
+            return
+
         self._timeout = aiohttp.ClientTimeout(total=timeout)
         self._session: aiohttp.ClientSession | None = None
         self._max_depth = max_depth
         self._user_agent = user_agent
         self._respect_robots = respect_robots
+
+        self._config = CrawlerConfig(
+            max_concurrent=max_concurrent,
+            per_domain=per_domain,
+            timeout=timeout,
+            max_depth=max_depth,
+            requests_per_second=requests_per_second,
+            min_delay=min_delay,
+            jitter=jitter,
+            respect_robots=respect_robots,
+            user_agent=user_agent,
+            max_retries=max_retries,
+            backoff_factor=backoff_factor,
+            circuit_breaker=circuit_breaker,
+        )
 
         self._sem_manager = SemaphoreManager(
             global_limit=max_concurrent,
@@ -61,9 +101,94 @@ class AsyncCrawler:
             backoff_factor=backoff_factor,
         )
         self._circuit_breaker = CircuitBreaker() if circuit_breaker else None
+        self._storage = storage or self._build_storage(self._config)
+        self._storage_errors = 0
+
+        self._sitemap = SitemapParser(user_agent=user_agent, timeout=timeout)
+        self._stats = CrawlerStats()
+        self._monitor = ProgressMonitor(enabled=True)
 
         self._results: dict[str, dict] = {}
         self._start_time: float = 0
+
+    @classmethod
+    def from_config(cls, path: str) -> "AsyncCrawler":
+        """Создание краулера из конфигурационного файла (YAML/JSON)."""
+        return cls(config=CrawlerConfig.from_file(path))
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "AsyncCrawler":
+        return cls(config=CrawlerConfig.from_dict(data))
+
+    def _apply_config(self, config: CrawlerConfig) -> None:
+        setup_logging(
+            level=config.logging_level,
+            log_file=config.log_file,
+            rotation_backups=config.log_rotation,
+            max_bytes=config.log_max_bytes,
+        )
+
+        self._config = config
+        self._timeout = aiohttp.ClientTimeout(total=config.timeout)
+        self._session = None
+        self._max_depth = config.max_depth
+        self._user_agent = config.user_agent
+        self._respect_robots = config.respect_robots
+
+        self._sem_manager = SemaphoreManager(
+            global_limit=config.max_concurrent,
+            per_domain_limit=config.per_domain,
+        )
+        self._queue = CrawlerQueue()
+        self._rate_limiter = RateLimiter(
+            requests_per_second=config.requests_per_second,
+            per_domain=True,
+            min_delay=config.min_delay,
+            jitter=config.jitter,
+        )
+        self._robots = RobotsParser(user_agent=config.user_agent)
+        self._retry_strategy = RetryStrategy(
+            max_retries=config.max_retries,
+            backoff_factor=config.backoff_factor,
+        )
+        self._circuit_breaker = (
+            CircuitBreaker() if config.circuit_breaker else None
+        )
+        self._storage = self._build_storage(config)
+        self._storage_errors = 0
+
+        self._sitemap = SitemapParser(
+            user_agent=config.user_agent, timeout=config.timeout
+        )
+        self._stats = CrawlerStats()
+        self._monitor = ProgressMonitor(enabled=True)
+
+        self._results = {}
+        self._start_time = 0
+
+    @staticmethod
+    def _build_storage(config: CrawlerConfig) -> DataStorage | None:
+        if config.storage == "json":
+            return JSONStorage(config.storage_path)
+        if config.storage == "csv":
+            return CSVStorage(config.storage_path)
+        if config.storage == "sqlite":
+            return SQLiteStorage(config.storage_path)
+        if config.storage in ("none", "memory"):
+            return None
+        return JSONStorage(config.storage_path)
+
+    @property
+    def config(self) -> CrawlerConfig:
+        return self._config
+
+    @property
+    def stats(self) -> CrawlerStats:
+        return self._stats
+
+    @property
+    def results(self) -> dict[str, dict]:
+        return self._results
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -145,8 +270,17 @@ class AsyncCrawler:
             html = await self._fetch(url)
             parser = HTMLParser()
             result = parser.parse_html(html, url)
+            result["crawled_at"] = datetime.now(timezone.utc)
             self._results[url] = result
             await self._queue.mark_processed(url)
+            self._stats.record_success(url)
+
+            if self._storage:
+                try:
+                    await self._storage.save(result)
+                except Exception as e:
+                    self._storage_errors += 1
+                    logger.error("Ошибка сохранения %s: %s", url, e)
 
             if depth < self._max_depth:
                 for link in result["links"]:
@@ -157,8 +291,10 @@ class AsyncCrawler:
                         await self._queue.add_url(link, depth=depth + 1)
         except PermissionError:
             await self._queue.mark_failed(url, "blocked by robots.txt")
+            self._stats.record_failure(url)
         except Exception as e:
             await self._queue.mark_failed(url, str(e))
+            self._stats.record_failure(url)
             logger.error("Ошибка обработки %s: %s", url, e)
 
     def _should_include(
@@ -216,38 +352,103 @@ class AsyncCrawler:
             )
             self._log_progress()
 
+    async def _resolve_start_urls(self, start_urls: list[str]) -> list[str]:
+        config = self._config
+        urls = list(start_urls)
+
+        sitemap_urls: list[str] = list(config.sitemap_urls)
+        if config.use_sitemap and not sitemap_urls:
+            for url in urls:
+                found = await self._sitemap.fetch_robots_sitemaps(url)
+                sitemap_urls.extend(found)
+
+        sitemap_pages: list[str] = []
+        for sm in sitemap_urls:
+            sitemap_pages.extend(await self._sitemap.fetch_sitemap(sm))
+
+        if sitemap_pages:
+            logger.info("Добавлено %d URL из sitemap", len(sitemap_pages))
+            urls = sitemap_pages
+
+        return urls
+
     async def crawl(
         self,
-        start_urls: list[str],
-        max_pages: int = 100,
+        start_urls: list[str] | None = None,
+        max_pages: int | None = None,
         max_depth: int | None = None,
-        same_domain_only: bool = False,
+        same_domain_only: bool | None = None,
         include_patterns: list[str] | None = None,
         exclude_patterns: list[str] | None = None,
     ) -> dict[str, dict]:
-        if max_depth is not None:
+        config = self._config
+        if start_urls is None:
+            start_urls = config.start_urls
+        if max_pages is None:
+            max_pages = config.max_pages
+        if max_depth is None:
+            max_depth = config.max_depth
+            if max_depth is not None:
+                self._max_depth = max_depth
+        elif max_depth is not None:
             self._max_depth = max_depth
+        if same_domain_only is None:
+            same_domain_only = config.same_domain_only
+        if include_patterns is None:
+            include_patterns = config.include_patterns or []
+        if exclude_patterns is None:
+            exclude_patterns = config.exclude_patterns or []
+
+        if not start_urls:
+            logger.warning("Нет стартовых URL для краулинга")
+            return {}
+
+        start_urls = await self._resolve_start_urls(start_urls)
+        limited_urls = start_urls[:max_pages]
 
         include = include_patterns or []
         exclude = exclude_patterns or []
-        domain = urlparse(start_urls[0]).netloc if start_urls else ""
+        domain = urlparse(limited_urls[0]).netloc if limited_urls else ""
+
+        if config.storage == "sqlite" and self._storage:
+            await self._storage.init_db()
 
         self._start_time = time.perf_counter()
+        self._stats.start()
 
-        for url in start_urls:
-            await self._queue.add_url(url, priority=0, depth=0)
+        total = len(limited_urls)
+        self._monitor.set_total(total)
 
-        workers = []
-        for _ in range(self._sem_manager._global_semaphore._value):
-            workers.append(
-                asyncio.create_task(
-                    self._worker(
-                        domain, same_domain_only, include, exclude,
+        def progress() -> int:
+            return self._stats.total_pages
+
+        def marks() -> int:
+            try:
+                return self._sem_manager.get_stats()["active_tasks"]
+            except Exception:
+                return 0
+
+        self._monitor.set_callbacks(progress=progress, marks=marks)
+        await self._monitor.start()
+
+        try:
+            for url in limited_urls:
+                await self._queue.add_url(url, priority=0, depth=0)
+
+            workers = []
+            for _ in range(self._sem_manager._global_semaphore._value):
+                workers.append(
+                    asyncio.create_task(
+                        self._worker(
+                            domain, same_domain_only, include, exclude,
+                        )
                     )
                 )
-            )
 
-        await asyncio.gather(*workers, return_exceptions=True)
+            await asyncio.gather(*workers, return_exceptions=True)
+        finally:
+            await self._monitor.stop()
+            self._stats.stop()
 
         elapsed = time.perf_counter() - self._start_time
         queue_stats = self._queue.get_stats()
@@ -255,16 +456,29 @@ class AsyncCrawler:
         retry_stats = self._retry_strategy.stats.get_summary()
         logger.info(
             "Краулинг завершён: %d страниц за %.2fс (%.1f стр/с) | "
-            "robots блоков: %d | повторов: %d | ошибок: %d",
+            "robots блоков: %d | повторов: %d | ошибок: %d | "
+            "ошибок сохранения: %d",
             queue_stats["processed"],
             elapsed,
             queue_stats["processed"] / elapsed if elapsed > 0 else 0,
             rate_stats["blocked_by_robots"],
             retry_stats["successful_retries"],
             retry_stats["permanent_failures"],
+            self._storage_errors,
         )
 
         return self._results
+
+    def get_stats(self) -> dict:
+        stats = self._stats.snapshot()
+        stats["errors"] = self.get_error_stats()
+        return stats
+
+    def export_to_json(self, filename: str | None = None) -> None:
+        self._stats.export_to_json(filename or self._config.output_stats)
+
+    def export_to_html_report(self, filename: str | None = None) -> None:
+        self._stats.export_to_html_report(filename or self._config.output_report)
 
     def get_error_stats(self) -> dict:
         return {
@@ -278,7 +492,14 @@ class AsyncCrawler:
         }
 
     async def close(self) -> None:
+        await self._monitor.stop()
         await self._robots.close()
+        await self._sitemap.close()
         if self._session and not self._session.closed:
             await self._session.close()
             logger.info("Сессия закрыта")
+        if self._storage:
+            try:
+                await self._storage.close()
+            except Exception as e:
+                logger.error("Ошибка закрытия storage: %s", e)
