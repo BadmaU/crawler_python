@@ -79,11 +79,15 @@ class JSONStorage(DataStorage):
             except (json.JSONDecodeError, OSError) as e:
                 logger.warning("Не удалось прочитать существующий JSON: %s", e)
 
-        existing.extend(self._buffer)
-        self._buffer.clear()
-
-        async with aiofiles.open(self._filepath, "w", encoding="utf-8") as f:
-            await f.write(json.dumps(existing, ensure_ascii=False, indent=self._indent, default=str))
+        pending = existing + self._buffer
+        try:
+            async with aiofiles.open(self._filepath, "w", encoding="utf-8") as f:
+                await f.write(
+                    json.dumps(pending, ensure_ascii=False, indent=self._indent, default=str)
+                )
+            self._buffer.clear()
+        except OSError as e:
+            logger.error("Не удалось сохранить JSON: %s", e)
 
     async def close(self) -> None:
         lock = self._ensure_lock()
@@ -165,9 +169,9 @@ class CSVStorage(DataStorage):
     async def save(self, data: dict) -> None:
         lock = self._ensure_lock()
         async with lock:
+            row = self._prepare_row(data)
             if not self._headers_written:
                 await self._ensure_headers()
-            row = self._prepare_row(data)
             output = io.StringIO(newline="")
             writer = csv.DictWriter(
                 output,

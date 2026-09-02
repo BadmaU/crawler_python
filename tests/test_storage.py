@@ -134,7 +134,7 @@ class TestJSONStorage:
             storage = JSONStorage(filepath, indent=4)
             await storage.save(sample_data)
             await storage.close()
-            async with open(filepath, "r") as f:
+            with open(filepath, "r") as f:
                 content = f.read()
             assert "    " in content
             data = await storage.read_all()
@@ -294,8 +294,10 @@ class TestSQLiteStorage:
         storage = SQLiteStorage(":memory:")
         await storage.init_db()
         storage._buffer_size = 5
-        for _ in range(10):
-            await storage.save(sample_data)
+        for i in range(10):
+            item = dict(sample_data)
+            item["url"] = f"https://example.com/page{i}"
+            await storage.save(item)
         assert len(storage._buffer) == 0
         count = await storage.get_count()
         assert count == 10
