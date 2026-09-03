@@ -51,6 +51,6 @@ output_stats: stats.json
 
 # Логирование
 logging_level: INFO
-log_file: crawler.log
+log_file: crawlerr.log
 log_rotation: 5
 log_max_bytes: 5000000

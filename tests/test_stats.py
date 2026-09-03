@@ -100,7 +100,7 @@ def test_export_to_html_report():
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "report.html")
         s.export_to_html_report(path)
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             content = f.read()
         assert "<html" in content
         assert "total" in content or "Всего" in content

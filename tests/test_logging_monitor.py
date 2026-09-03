@@ -11,10 +11,10 @@ def test_setup_logging_file():
         log_path = os.path.join(d, "app.log")
         logger = setup_logging(level="INFO", log_file=log_path, name="ln1", force=True)
         logger.info("тест")
-        for h in list(logger.handlers):
-            h.flush()
-        # RotatingFileHandler не всегда flush на диск сразу, но файл должен появиться
         assert os.path.exists(log_path)
+        for h in list(logger.handlers):
+            h.close()
+            logger.removeHandler(h)
 
 
 def test_setup_logging_no_duplicate_handlers():
