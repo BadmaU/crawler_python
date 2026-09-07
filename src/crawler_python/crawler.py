@@ -111,6 +111,10 @@ class AsyncCrawler:
         self._results: dict[str, dict] = {}
         self._start_time: float = 0
 
+        self._max_pages: int | None = None
+        self._pages_taken = 0
+        self._pages_lock = asyncio.Lock()
+
     @classmethod
     def from_config(cls, path: str) -> "AsyncCrawler":
         """Создание краулера из конфигурационного файла (YAML/JSON)."""
@@ -166,6 +170,10 @@ class AsyncCrawler:
         self._results = {}
         self._start_time = 0
 
+        self._max_pages = None
+        self._pages_taken = 0
+        self._pages_lock = asyncio.Lock()
+
     @staticmethod
     def _build_storage(config: CrawlerConfig) -> DataStorage | None:
         if config.storage == "json":
@@ -217,16 +225,52 @@ class AsyncCrawler:
             self._rate_limiter.record_blocked()
         return allowed
 
-    async def _do_fetch(self, url: str) -> str:
+    async def _do_fetch(self, url: str) -> dict:
         session = await self._get_session()
         logger.info("Загрузка %s", url)
         async with session.get(url) as response:
             response.raise_for_status()
             text = await response.text()
             logger.info("Успешно: %s (%d)", url, response.status)
-            return text
+            return {
+                "text": text,
+                "status_code": response.status,
+                "content_type": response.headers.get("Content-Type", ""),
+            }
 
-    async def _fetch(self, url: str) -> str:
+    async def fetch_url(self, url: str) -> str:
+        """Загрузка одной страницы (публичный API дня 2)."""
+        parsed = await self._fetch(url)
+        return parsed["text"]
+
+    async def fetch_urls(self, urls: list[str]) -> dict[str, str]:
+        """Параллельная загрузка списка URL (публичный API дня 2)."""
+        results: dict[str, str] = {}
+
+        async def _one(u: str) -> None:
+            try:
+                results[u] = await self.fetch_url(u)
+            except Exception as e:
+                logger.error("Ошибка %s: %s", u, e)
+
+        await asyncio.gather(*(_one(u) for u in urls))
+        return results
+
+    async def fetch_and_parse(self, url: str) -> dict:
+        """Загрузка и парсинг одной страницы (публичный API дня 3).
+
+        Возвращает словарь с полями url, title, text, links, metadata,
+        а также status_code и content_type.
+        """
+        parsed = await self._fetch(url)
+        html = parsed["text"]
+        parser = HTMLParser()
+        result = await parser.parse_html(html, url)
+        result["status_code"] = parsed["status_code"]
+        result["content_type"] = parsed["content_type"]
+        return result
+
+    async def _fetch(self, url: str) -> dict:
         domain = urlparse(url).netloc
 
         await self._ensure_robots(url)
@@ -267,13 +311,19 @@ class AsyncCrawler:
         exclude_patterns: list[str],
     ) -> None:
         try:
-            html = await self._fetch(url)
+            if not await self._claim_page_slot():
+                await self._queue.mark_processed(url)
+                return
+            fetched = await self._fetch(url)
+            html = fetched["text"]
             parser = HTMLParser()
-            result = parser.parse_html(html, url)
+            result = await parser.parse_html(html, url)
             result["crawled_at"] = datetime.now(timezone.utc)
+            result["status_code"] = fetched["status_code"]
+            result["content_type"] = fetched["content_type"]
             self._results[url] = result
             await self._queue.mark_processed(url)
-            self._stats.record_success(url)
+            self._stats.record_success(url, status=fetched["status_code"])
 
             if self._storage:
                 try:
@@ -296,6 +346,13 @@ class AsyncCrawler:
             await self._queue.mark_failed(url, str(e))
             self._stats.record_failure(url)
             logger.error("Ошибка обработки %s: %s", url, e)
+
+    async def _claim_page_slot(self) -> bool:
+        async with self._pages_lock:
+            if self._max_pages is not None and self._pages_taken >= self._max_pages:
+                return False
+            self._pages_taken += 1
+            return True
 
     def _should_include(
         self,
@@ -386,6 +443,8 @@ class AsyncCrawler:
             start_urls = config.start_urls
         if max_pages is None:
             max_pages = config.max_pages
+        self._max_pages = max_pages
+        self._pages_taken = 0
         if max_depth is None:
             max_depth = config.max_depth
             if max_depth is not None:

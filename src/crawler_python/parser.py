@@ -10,7 +10,7 @@ class HTMLParser:
     def __init__(self, base_url: str = "") -> None:
         self._base_url = base_url
 
-    def parse_html(self, html: str, url: str) -> dict:
+    async def parse_html(self, html: str, url: str) -> dict:
         try:
             soup = BeautifulSoup(html, "lxml")
         except Exception as e:
