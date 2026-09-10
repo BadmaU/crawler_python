@@ -326,5 +326,97 @@
     "crawled_at": "2026-09-07T12:10:05.478149+00:00",
     "status_code": 200,
     "content_type": "text/html"
+  },
+  {
+    "url": "https://example.com",
+    "title": "Example Domain",
+    "text": "Example Domain This domain is for use in documentation examples without needing permission. Avoid use in operations. Learn more",
+    "links": [
+      "https://iana.org/domains/example"
+    ],
+    "metadata": {
+      "description": "",
+      "keywords": ""
+    },
+    "images": [],
+    "headings": {
+      "h1": [
+        "Example Domain"
+      ]
+    },
+    "tables": [],
+    "lists": [],
+    "crawled_at": "2026-09-10T12:12:35.218486+00:00",
+    "status_code": 200,
+    "content_type": "text/html"
+  },
+  {
+    "url": "https://example.com",
+    "title": "Example Domain",
+    "text": "Example Domain This domain is for use in documentation examples without needing permission. Avoid use in operations. Learn more",
+    "links": [
+      "https://iana.org/domains/example"
+    ],
+    "metadata": {
+      "description": "",
+      "keywords": ""
+    },
+    "images": [],
+    "headings": {
+      "h1": [
+        "Example Domain"
+      ]
+    },
+    "tables": [],
+    "lists": [],
+    "crawled_at": "2026-09-10T12:12:35.409779+00:00",
+    "status_code": 200,
+    "content_type": "text/html"
+  },
+  {
+    "url": "https://example.com",
+    "title": "Example Domain",
+    "text": "Example Domain This domain is for use in documentation examples without needing permission. Avoid use in operations. Learn more",
+    "links": [
+      "https://iana.org/domains/example"
+    ],
+    "metadata": {
+      "description": "",
+      "keywords": ""
+    },
+    "images": [],
+    "headings": {
+      "h1": [
+        "Example Domain"
+      ]
+    },
+    "tables": [],
+    "lists": [],
+    "crawled_at": "2026-09-10T12:12:37.205274+00:00",
+    "status_code": 200,
+    "content_type": "text/html"
+  },
+  {
+    "url": "https://example.com",
+    "title": "Example Domain",
+    "text": "Example Domain This domain is for use in documentation examples without needing permission. Avoid use in operations. Learn more",
+    "links": [
+      "https://iana.org/domains/example"
+    ],
+    "metadata": {
+      "description": "",
+      "keywords": ""
+    },
+    "images": [],
+    "headings": {
+      "h1": [
+        "Example Domain"
+      ]
+    },
+    "tables": [],
+    "lists": [],
+    "crawled_at": "2026-09-10T12:12:37.464295+00:00",
+    "status_code": 200,
+    "content_type": "text/html"
   }
 ]

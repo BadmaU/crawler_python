@@ -43,18 +43,21 @@ class RateLimiter:
                 elapsed = now - last
                 if elapsed < interval:
                     wait = interval - elapsed
-                self._domain_last[domain] = now + wait
             else:
                 elapsed = now - self._global_last
                 if elapsed < self._global_interval:
                     wait = self._global_interval - elapsed
-                self._global_last = now + wait
 
             if self._min_delay > 0:
                 wait = max(wait, self._min_delay)
 
             if self._jitter > 0:
                 wait += random.uniform(0, self._jitter)
+
+            if self._per_domain and domain:
+                self._domain_last[domain] = now + wait
+            else:
+                self._global_last = now + wait
 
         if wait > 0:
             self._total_waits += 1

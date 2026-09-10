@@ -397,17 +397,21 @@ class AsyncCrawler:
         exclude_patterns: list[str],
     ) -> None:
         while True:
-            item = await self._queue.get_next()
+            item = await self._queue.get_next_or_wait()
             if item is None:
                 break
             if item.depth > self._max_depth:
                 await self._queue.mark_processed(item.url)
                 continue
-            await self._process_url(
-                item.url, item.depth, domain, same_domain_only,
-                include_patterns, exclude_patterns,
-            )
-            self._log_progress()
+            self._queue.task_started()
+            try:
+                await self._process_url(
+                    item.url, item.depth, domain, same_domain_only,
+                    include_patterns, exclude_patterns,
+                )
+                self._log_progress()
+            finally:
+                self._queue.task_finished()
 
     async def _resolve_start_urls(self, start_urls: list[str]) -> list[str]:
         config = self._config

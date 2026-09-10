@@ -21,6 +21,8 @@ class CrawlerQueue:
         self._processed: set[str] = set()
         self._failed: dict[str, str] = {}
         self._lock = asyncio.Lock()
+        self._item_event = asyncio.Event()
+        self._active_tasks = 0
 
     async def add_url(self, url: str, priority: int = 0, depth: int = 0) -> bool:
         async with self._lock:
@@ -29,6 +31,7 @@ class CrawlerQueue:
             item = URLItem(priority=priority, url=url, depth=depth)
             heapq.heappush(self._heap, item)
             self._in_queue.add(url)
+            self._item_event.set()
             return True
 
     async def get_next(self) -> URLItem | None:
@@ -40,6 +43,22 @@ class CrawlerQueue:
                     return item
         return None
 
+    async def get_next_or_wait(self, timeout: float = 0.5) -> URLItem | None:
+        while True:
+            item = await self.get_next()
+            if item is not None:
+                return item
+            if self._active_tasks == 0 and self.is_empty_sync():
+                return None
+            self._item_event.clear()
+            try:
+                await asyncio.wait_for(self._item_event.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                continue
+
+    def is_empty_sync(self) -> bool:
+        return len(self._heap) == 0
+
     async def mark_processed(self, url: str) -> None:
         async with self._lock:
             self._processed.add(url)
@@ -48,6 +67,14 @@ class CrawlerQueue:
         async with self._lock:
             self._failed[url] = error
             self._processed.add(url)
+
+    def task_started(self) -> None:
+        self._active_tasks += 1
+
+    def task_finished(self) -> None:
+        self._active_tasks = max(0, self._active_tasks - 1)
+        if self._active_tasks == 0 and len(self._heap) == 0:
+            self._item_event.set()
 
     async def is_empty(self) -> bool:
         async with self._lock:
